@@ -62,6 +62,8 @@ forward the devices' traffic for this system's tunnel address; a device then ope
 this system is reachable, and the addon makes exactly one outgoing connection: to that server. A server name that does
 not resolve at boot is retried every minute.
 
+![Client mode](docs/screenshots/04-client.png)
+
 ## How it works
 
 - The tunnel ends in the addon's process (gVisor's network stack from wireguard-go). A device's connections to

@@ -52,5 +52,15 @@ for (const scheme of ['light', 'dark'] as const) {
         await page.getByRole('tab', {name: /Server/}).click();
         await page.waitForTimeout(400);
         await page.screenshot({path: out('03-server')});
+        // the client mode
+        await page.getByTestId('mode-client').check();
+        await page.getByTestId('import-conf').fill('[Interface]\nPrivateKey = WAmgVYXkbT2bCtdcDwolI88/iTy4GNaH42zKFkaWBHg=\nAddress = 10.8.0.5/32\n\n[Peer]\nPublicKey = bmPCoiV1OzK4UGZprBgXfZtdTtq0dfqPIVRQ9zi3SD8=\nEndpoint = vps.example.org:51820\nAllowedIPs = 10.8.0.0/24\nPersistentKeepalive = 25\n');
+        await page.getByTestId('import-save').click();
+        await expect(page.getByTestId('client')).toBeVisible();
+        await page.waitForTimeout(600);
+        await page.screenshot({path: out('04-client')});
+        await page.getByTestId('client-remove').click();
+        await page.getByTestId('confirm-remove-client-yes').click();
+        await expect(page.getByTestId('server-status')).toBeVisible();
     });
 }

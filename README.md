@@ -67,6 +67,8 @@ Geräte für die Tunnel-Adresse dieses Systems weitergeleitet werden; ein Gerät
 ist nur dieses System erreichbar, und das Addon baut genau eine ausgehende Verbindung auf: zu diesem Server. Ein
 Servername, der beim Start nicht auflöst, wird jede Minute neu versucht.
 
+![Client-Modus](docs/screenshots/04-client.png)
+
 ## Wie es funktioniert
 
 - Der Tunnel endet im Prozess des Addons (gVisors Netzwerkstack aus wireguard-go). Verbindungen eines Geräts zu
