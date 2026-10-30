@@ -16,6 +16,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 
+	"github.com/hobbyquaker/lite-addon-wireguard/internal/addrmap"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/config"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/fakesys"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/wgkeys"
@@ -227,5 +228,99 @@ func TestParsePeers(t *testing.T) {
 	p := parsePeers(out)
 	if len(p) != 2 || p["0011"].Endpoint != "1.2.3.4:5" || p["0011"].LastHandshake != 1700000000500 || p["0011"].TxBytes != 10 || p["0011"].RxBytes != 20 || p["2233"].LastHandshake != 0 {
 		t.Fatalf("%+v", p)
+	}
+}
+
+// The client mode: this system connects to a server elsewhere (a second netstack here, listening),
+// and a request from the server's side of the tunnel reaches the ingress stub with the server
+// network's address.
+func TestTunnelClientMode(t *testing.T) {
+	dir := t.TempDir()
+	store, err := config.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "the VPS": a wireguard-go that listens, with this system as its one peer
+	serverPriv, _ := wgkeys.NewPrivateKey()
+	ourPriv, _ := wgkeys.NewPrivateKey()
+	psk, _ := wgkeys.NewPresharedKey()
+	port := freeUDPPort(t)
+	tdev, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.8.0.1")}, nil, 1420)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vps := device.NewDevice(tdev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, "vps "))
+	if err := vps.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\npublic_key=%s\npreshared_key=%s\nallowed_ip=10.8.0.5/32\n", serverPriv.Hex(), port, ourPriv.Public().Hex(), psk.Hex())); err != nil {
+		t.Fatal(err)
+	}
+	if err := vps.Up(); err != nil {
+		t.Fatal(err)
+	}
+	defer vps.Close()
+	conf := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.8.0.5/32\nDNS = 10.8.0.1\n\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nEndpoint = 127.0.0.1:%d\nAllowedIPs = 10.8.0.0/24\nPersistentKeepalive = 5\n", ourPriv, serverPriv.Public(), psk, port)
+	if err := store.ImportClient(conf); err != nil {
+		t.Fatal(err)
+	}
+	stub, err := fakesys.ListenProxyStub(filepath.Join(t.TempDir(), "proxy.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stub.Close()
+	amap, err := addrmap.Open(filepath.Join(dir, "addrmap.json"), netip.MustParsePrefix(config.MappedBlock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tun := New(Options{Socket: stub.Path, Log: t.Logf, Declared: []netip.Prefix{netip.MustParsePrefix(config.DefaultNetwork)}, Map: amap})
+	defer tun.Close()
+	if err := tun.Apply(store.Get()); err != nil {
+		t.Fatal(err)
+	}
+	st := tun.Status()
+	if !st.Running || st.Mode != config.ModeClient || st.Address != "10.8.0.5" || st.ListenPort != 0 || st.PublicKey != ourPriv.Public().String() {
+		t.Fatalf("status %+v", st)
+	}
+	// a request from the server's side (as a device routed by the VPS would make it)
+	cl := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return tnet.DialContext(ctx, network, addr)
+	}}, Timeout: 15 * time.Second}
+	res, err := cl.Get("http://10.8.0.5/api/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the server's side address 10.8.0.1 is mapped into the declared block: the system sees 10.77.1.1
+	if res.StatusCode != 200 || res.Header.Get("X-Claimed-Address") != "10.77.1.1" {
+		t.Fatalf("through the client tunnel: %d %s", res.StatusCode, res.Header.Get("X-Claimed-Address"))
+	}
+	st = tun.Status()
+	if st.Client == nil || st.Client.LastHandshake == 0 || st.Client.RxBytes == 0 {
+		t.Fatalf("client status %+v", st.Client)
+	}
+	if len(st.Mapped) != 1 || st.Mapped[0].Real != "10.8.0.1" || st.Mapped[0].Mapped != "10.77.1.1" {
+		t.Fatalf("mapped %+v", st.Mapped)
+	}
+	// the same device again: the same mapped address
+	if res, err := cl.Get("http://10.8.0.5/again"); err != nil || res.Header.Get("X-Claimed-Address") != "10.77.1.1" {
+		t.Fatalf("second request: %v", err)
+	}
+	if got := stub.Claimed(); len(got) != 2 || got[1].Addr().String() != "10.77.1.1" {
+		t.Fatalf("claimed %v", got)
+	}
+	// back to the server mode: the device is made anew with the server key and port
+	if err := store.SetMode(config.ModeServer); err != nil {
+		t.Fatal(err)
+	}
+	if err := tun.Apply(store.Get()); err != nil {
+		t.Fatal(err)
+	}
+	if st := tun.Status(); st.Mode != config.ModeServer || st.Address != "10.77.0.1" || !st.Running {
+		t.Fatalf("server mode again: %+v", st)
+	}
+	// a name that does not resolve: the error is reported, the tunnel is not up
+	bad := strings.Replace(conf, fmt.Sprintf("127.0.0.1:%d", port), "no-such-host.invalid:51820", 1)
+	if err := store.ImportClient(bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := tun.Apply(store.Get()); err == nil || !strings.Contains(tun.Status().Error, "endpoint") {
+		t.Fatalf("unresolvable endpoint: %v %+v", err, tun.Status())
 	}
 }

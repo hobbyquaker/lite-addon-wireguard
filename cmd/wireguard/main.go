@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/hobbyquaker/ccu-addon-kit/go/addonkit"
 
+	"github.com/hobbyquaker/lite-addon-wireguard/internal/addrmap"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/config"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/httpapi"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/sysinfo"
@@ -66,7 +68,13 @@ func run(confDir, id string, port int, base, basePath, www, socket, tokenFile st
 	if err != nil {
 		return err
 	}
-	tun := tunnel.New(tunnel.Options{Socket: socket, Log: logf})
+	// the addresses the manifest declares for the ingress: the own network as it is, everything
+	// else (the client mode's server network) mapped one to one into the second block
+	amap, err := addrmap.Open(filepath.Join(confDir, "addrmap.json"), netip.MustParsePrefix(config.MappedBlock))
+	if err != nil {
+		return err
+	}
+	tun := tunnel.New(tunnel.Options{Socket: socket, Log: logf, Declared: []netip.Prefix{netip.MustParsePrefix(config.DefaultNetwork)}, Map: amap})
 	defer tun.Close()
 	store.OnChange = func(c config.Config) {
 		if err := tun.Apply(c); err != nil {
@@ -77,6 +85,24 @@ func run(confDir, id string, port int, base, basePath, www, socket, tokenFile st
 		// the port in use, say: the page shows it, the daemon stays up and serves the page
 		logf("the tunnel is not up: %v", err)
 	}
+	// a tunnel that could not come up (the server's name did not resolve at boot, the port was
+	// taken) is tried again every minute
+	go func() {
+		tick := time.NewTicker(time.Minute)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if st := tun.Status(); st.Error != "" && store.Get().Server.Enabled {
+					if err := tun.Apply(store.Get()); err == nil {
+						logf("the tunnel is up after a retry")
+					}
+				}
+			}
+		}
+	}()
 
 	var token addonkit.TokenSource
 	if tokenFile != "" {

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0] - unreleased
+
+- **Client mode:** this system connects out to a WireGuard server elsewhere - a VPS, a router with a WireGuard server,
+  OPNsense - and the devices come through that server; no open port and no port forward here, so it works behind
+  DS-Lite and CGNAT too. The server's configuration file for this system is imported on the page (pasted; the private
+  key in it is stored 0600 and never shown again); the page shows the connection's state (handshake, traffic), the
+  server, this system's tunnel address and public key, and the networks whose devices may reach this system. The
+  same ingress as the server mode: a device reaches this system's web server alone, with its own tunnel address as
+  the client. A server name that does not resolve at boot is retried every minute. A VPS how-to on the page.
+- **Addresses in the client mode:** the devices come with the server's addresses, which the system's ingress does
+  not accept. Each device's address is mapped one to one and stably onto an address from `10.77.1.0/24`, the second
+  block the manifest declares; the system - the login lockout, API token address ranges, the journal - sees the
+  mapped address, the page shows both (*Devices seen*). The table is kept beside the configuration (in the backup);
+  254 addresses, the device not seen for the longest time gives its address up when the block is full.
+
 ## [0.1.0] - 2026-10-30
 
 The first release, for openccu-lite 1.1.0-dev.6 and newer (the web ingress of the system).

@@ -50,6 +50,18 @@ cannot be reached through the ingress).
 
 ![Server](docs/screenshots/03-server.png)
 
+## Client mode (0.2.0)
+
+Instead of listening itself, the system connects to a **WireGuard server elsewhere** - a small VPS with WireGuard, a
+router with a WireGuard server, OPNsense - and the devices come through that server. No port is open here and no port
+forward is needed; it works behind DS-Lite or CGNAT too. On the server, add a peer for this system (a key pair, a tunnel
+address such as `10.8.0.5/32`, optionally a preshared key) and import the configuration file the server makes for it
+under **Server → Mode → Client** (paste it). The page shows the connection (handshake, traffic), the server, this
+system's tunnel address and public key and the networks whose devices may reach it (`AllowedIPs`). The server must
+forward the devices' traffic for this system's tunnel address; a device then opens `http://10.8.0.5/`. Here too only
+this system is reachable, and the addon makes exactly one outgoing connection: to that server. A server name that does
+not resolve at boot is retried every minute.
+
 ## How it works
 
 - The tunnel ends in the addon's process (gVisor's network stack from wireguard-go). A device's connections to
@@ -58,6 +70,12 @@ cannot be reached through the ingress).
   names the device's tunnel address. lighttpd and the system treat the request like one from the LAN from that
   address: the login lockout, API token address ranges and the journal see `10.77.0.2`. The system refuses addresses
   outside the declared tunnel network.
+- The manifest declares two blocks as the web ingress: `10.77.0.0/24` (the own network in the server mode) and
+  `10.77.1.0/24`. In the client mode the devices come with addresses of the server's network; each is **mapped one to
+  one and stably onto an address from `10.77.1.0/24`**, and that is what the system sees - the login lockout, API
+  token address ranges and the journal work per device with it; the page shows both addresses. The table lives in
+  `addrmap.json` beside the configuration (in the backup); 254 addresses, the device not seen for the longest time
+  gives its address up when the block is full. The system refuses addresses outside the two blocks.
 - What a device reaches is the addon's decision: the web server alone. There is no route into the LAN and no way to
   the radio interfaces or the classic RPC.
 - The configuration (the system's private key, the devices with their public and preshared keys) lives in

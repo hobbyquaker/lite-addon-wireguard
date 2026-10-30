@@ -69,6 +69,9 @@ func New(o Options) http.Handler {
 	handle(api, "GET /api/v1/config", s.config)
 	handle(api, "PUT /api/v1/server", s.putServer)
 	handle(api, "POST /api/v1/server/regenerate-key", s.regenerate)
+	handle(api, "PUT /api/v1/mode", s.putMode)
+	handle(api, "POST /api/v1/client/import", s.importClient)
+	handle(api, "DELETE /api/v1/client", s.deleteClient)
 	handle(api, "POST /api/v1/devices", s.addDevice)
 	handle(api, "PUT /api/v1/devices/{id}", s.updateDevice)
 	handle(api, "DELETE /api/v1/devices/{id}", s.deleteDevice)
@@ -153,9 +156,25 @@ type DeviceView struct {
 	Created   int64  `json:"created"`
 }
 
+// ClientView is the imported server configuration as the page sees it: without the keys.
+type ClientView struct {
+	// PublicKey is this system's public key in that tunnel (the server knows it as the peer).
+	PublicKey     string   `json:"public_key"`
+	Address       string   `json:"address"`
+	PeerPublicKey string   `json:"peer_public_key"`
+	HasPSK        bool     `json:"has_psk"`
+	Endpoint      string   `json:"endpoint"`
+	AllowedIPs    []string `json:"allowed_ips"`
+	Keepalive     int      `json:"keepalive"`
+	Imported      int64    `json:"imported"`
+}
+
 // ConfigView is GET /api/v1/config.
 type ConfigView struct {
+	// Mode is server or client.
+	Mode     string       `json:"mode"`
 	Server   ServerView   `json:"server"`
+	Client   *ClientView  `json:"client,omitempty"`
 	Devices  []DeviceView `json:"devices"`
 	Defaults struct {
 		ListenPort int    `json:"listen_port"`
@@ -182,7 +201,17 @@ func deviceView(d config.Device) DeviceView {
 
 func (s *server) view() ConfigView {
 	c := s.o.Store.Get()
-	v := ConfigView{Server: serverView(c), Devices: []DeviceView{}, Version: s.o.Version}
+	v := ConfigView{Mode: config.ModeServer, Server: serverView(c), Devices: []DeviceView{}, Version: s.o.Version}
+	if c.IsClient() {
+		v.Mode = config.ModeClient
+	}
+	if cl := c.Client; cl != nil {
+		cv := &ClientView{Address: cl.Address, PeerPublicKey: cl.PeerPublicKey, HasPSK: cl.PresharedKey != "", Endpoint: cl.Endpoint, AllowedIPs: append([]string{}, cl.AllowedIPs...), Keepalive: cl.Keepalive, Imported: cl.Imported}
+		if k, err := wgkeys.Parse(cl.PrivateKey); err == nil {
+			cv.PublicKey = k.Public().String()
+		}
+		v.Client = cv
+	}
 	for _, d := range config.SortedDevices(c.Devices) {
 		v.Devices = append(v.Devices, deviceView(d))
 	}
@@ -192,7 +221,8 @@ func (s *server) view() ConfigView {
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	st := s.o.Tunnel.Status()
-	ready := st.Running || !s.o.Store.Get().Server.Enabled
+	c := s.o.Store.Get()
+	ready := st.Running || !c.Server.Enabled || (c.IsClient() && c.Client == nil)
 	if r.URL.Query().Get("ready") == "1" && !ready {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "ready": false, "version": s.o.Version, "error": st.Error})
 		return
@@ -210,6 +240,46 @@ func (s *server) putServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.o.Store.SetServer(in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, s.view())
+}
+
+func (s *server) putMode(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Mode string `json:"mode"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.o.Store.SetMode(in.Mode); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, s.view())
+}
+
+func (s *server) importClient(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Conf string `json:"conf"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if len(in.Conf) > 16384 {
+		addonkit.WriteError(w, http.StatusUnprocessableEntity, "invalid", "the configuration is too large")
+		return
+	}
+	if err := s.o.Store.ImportClient(in.Conf); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, s.view())
+}
+
+func (s *server) deleteClient(w http.ResponseWriter, r *http.Request) {
+	if err := s.o.Store.RemoveClient(); err != nil {
 		writeErr(w, err)
 		return
 	}

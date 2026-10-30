@@ -67,3 +67,27 @@ func TestClientConfig(t *testing.T) {
 		t.Fatalf("qr: %v %d", err, len(png))
 	}
 }
+
+func TestParseImported(t *testing.T) {
+	good := "[Interface]\nPrivateKey = WAmgVYXkbT2bCtdcDwolI88/iTy4GNaH42zKFkaWBHg=\nAddress = 10.8.0.5/32, fd42::5/128\nDNS = 10.8.0.1\nMTU = 1420\n\n# the server\n[Peer]\nPublicKey = bmPCoiV1OzK4UGZprBgXfZtdTtq0dfqPIVRQ9zi3SD8=\nPresharedKey = bmPCoiV1OzK4UGZprBgXfZtdTtq0dfqPIVRQ9zi3SD8=\nEndpoint = vps.example.org:51820\nAllowedIPs = 10.8.0.0/24, 192.168.50.0/24\nPersistentKeepalive = 25\n"
+	c, err := ParseImported(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Address != "10.8.0.5/32" || c.Endpoint != "vps.example.org:51820" || len(c.AllowedIPs) != 2 || c.Keepalive != 25 || c.PresharedKey.IsZero() || c.DNS != "10.8.0.1" {
+		t.Fatalf("%+v", c)
+	}
+	for _, bad := range []string{
+		"", "[Peer]\nPublicKey = bmPCoiV1OzK4UGZprBgXfZtdTtq0dfqPIVRQ9zi3SD8=\n",
+		strings.Replace(good, "Endpoint = vps.example.org:51820\n", "", 1),
+		strings.Replace(good, "AllowedIPs = 10.8.0.0/24, 192.168.50.0/24\n", "", 1),
+		good + "\n[Peer]\nPublicKey = WAmgVYXkbT2bCtdcDwolI88/iTy4GNaH42zKFkaWBHg=\n",
+		strings.Replace(good, "PrivateKey = WAmgVYXkbT2bCtdcDwolI88/iTy4GNaH42zKFkaWBHg=", "PrivateKey = short", 1),
+		good + "Bogus = 1\n",
+		"[Other]\nx = 1\n",
+	} {
+		if _, err := ParseImported(bad); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}

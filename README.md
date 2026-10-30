@@ -54,6 +54,19 @@ dass der Webserver über den Eingang nicht erreichbar ist).
 
 ![Server](docs/screenshots/03-server.png)
 
+## Client-Modus (0.2.0)
+
+Statt selbst zu lauschen, verbindet sich das System mit einem **WireGuard-Server anderswo** – einem kleinen VPS mit
+WireGuard, einem Router mit WireGuard-Server, OPNsense –, und die Geräte kommen über diesen Server. Hier ist dann kein
+Port offen und keine Portweiterleitung nötig; das funktioniert auch hinter DS-Lite oder CGNAT. Auf dem Server legen Sie
+einen Peer für dieses System an (Schlüsselpaar, eine Tunnel-Adresse wie `10.8.0.5/32`, optional ein Preshared Key) und
+importieren die Konfigurationsdatei, die der Server dafür erstellt, unter **Server → Modus → Client** (einfügen). Die
+Seite zeigt die Verbindung (Handshake, Datenverkehr), den Server, die Tunnel-Adresse und den öffentlichen Schlüssel
+dieses Systems und die Netze, deren Geräte es erreichen dürfen (`AllowedIPs`). Auf dem Server muss der Verkehr der
+Geräte für die Tunnel-Adresse dieses Systems weitergeleitet werden; ein Gerät öffnet dann `http://10.8.0.5/`. Auch hier
+ist nur dieses System erreichbar, und das Addon baut genau eine ausgehende Verbindung auf: zu diesem Server. Ein
+Servername, der beim Start nicht auflöst, wird jede Minute neu versucht.
+
 ## Wie es funktioniert
 
 - Der Tunnel endet im Prozess des Addons (gVisors Netzwerkstack aus wireguard-go). Verbindungen eines Geräts zu
@@ -62,6 +75,12 @@ dass der Webserver über den Eingang nicht erreichbar ist).
   Header, der die Tunnel-Adresse des Geräts nennt. lighttpd und das System behandeln die Anfrage wie eine aus dem LAN
   von dieser Adresse: Anmeldesperre, Adressbereiche von API-Tokens und das Journal sehen `10.77.0.2`. Adressen außerhalb
   des deklarierten Tunnel-Netzes nimmt das System nicht an.
+- Das Manifest erklärt als Web-Eingang zwei Blöcke: `10.77.0.0/24` (das eigene Netz im Server-Modus) und
+  `10.77.1.0/24`. Im Client-Modus kommen die Geräte mit Adressen aus dem Netz des Servers; jede wird **fest 1:1 auf
+  eine Adresse aus `10.77.1.0/24` abgebildet**, und das System sieht diese – Anmeldesperre, Adressbereiche von
+  API-Tokens und Journal arbeiten damit je Gerät; die Seite zeigt beide Adressen. Die Zuordnung liegt in
+  `addrmap.json` neben der Konfiguration (im Backup); 254 Adressen, bei vollem Block gibt das am längsten nicht
+  gesehene Gerät seine ab. Adressen außerhalb der beiden Blöcke nimmt das System nicht an.
 - Was ein Gerät erreicht, bestimmt das Addon: nur den Webserver. Es gibt keine Route ins LAN und keinen Weg zu den
   Funkschnittstellen oder zum klassischen RPC.
 - Die Konfiguration (der private Schlüssel des Systems, die Geräte mit ihren öffentlichen und Preshared Keys) liegt in

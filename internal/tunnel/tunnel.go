@@ -26,6 +26,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 
+	"github.com/hobbyquaker/lite-addon-wireguard/internal/addrmap"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/config"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/proxyproto"
 	"github.com/hobbyquaker/lite-addon-wireguard/internal/wgkeys"
@@ -47,6 +48,20 @@ type Options struct {
 	MTU int
 	// DialTimeout for the socket, 5 s by default.
 	DialTimeout time.Duration
+	// Declared are the address ranges the addon's manifest declares for its ingress: a device
+	// whose address lies in one of them is claimed as it is. Any other address - the client
+	// mode's, where the server hands out its own network - is mapped into Map's block.
+	Declared []netip.Prefix
+	// Map is the address table for the devices outside Declared (nil: no mapping, every address
+	// is claimed as it is - the tests' default).
+	Map *addrmap.Table
+}
+
+// Mapping is one device as the page sees it in the client mode: its real tunnel address, the
+// address the system sees, and the open connections.
+type Mapping struct {
+	addrmap.Entry
+	Connections int `json:"connections"`
 }
 
 // PeerStatus is one device as the WireGuard device sees it.
@@ -84,6 +99,13 @@ type Status struct {
 	SocketError string `json:"socket_error,omitempty"`
 	// Since is unix milliseconds of the device's start.
 	Since int64 `json:"since,omitempty"`
+	// Mode is server or client.
+	Mode string `json:"mode"`
+	// Client is the server peer's state in the client mode (nil in the server mode).
+	Client *PeerStatus `json:"client,omitempty"`
+	// Mapped are the devices whose addresses are mapped into the declared block (the client mode),
+	// most recently seen first.
+	Mapped []Mapping `json:"mapped,omitempty"`
 }
 
 // Tunnel is the WireGuard end.
@@ -138,13 +160,13 @@ func (t *Tunnel) Apply(c config.Config) error {
 	if t.closed {
 		return errors.New("closed")
 	}
-	if !c.Server.Enabled {
+	if !c.Server.Enabled || (c.IsClient() && c.Client == nil) {
 		t.stopLocked()
 		t.cfg = c
 		t.err = ""
 		return nil
 	}
-	needNew := t.dev == nil || t.cfg.Server.PrivateKey != c.Server.PrivateKey || t.cfg.Server.ListenPort != c.Server.ListenPort || t.cfg.Server.Network != c.Server.Network
+	needNew := t.dev == nil || t.cfg.IsClient() != c.IsClient() || identity(t.cfg) != identity(c)
 	if needNew {
 		t.stopLocked()
 		if err := t.startLocked(c); err != nil {
@@ -156,6 +178,14 @@ func (t *Tunnel) Apply(c config.Config) error {
 	}
 	want := peerLines(c)
 	if uapi := peersDelta(t.peers, want); uapi != "" {
+		if i := strings.Index(uapi, "endpoint_error="); i >= 0 {
+			msg := uapi[i+len("endpoint_error="):]
+			msg = msg[:strings.IndexByte(msg, '\n')]
+			t.err = "the server's endpoint: " + msg
+			t.cfg = c
+			t.o.Log("tunnel: %s", t.err)
+			return errors.New(t.err)
+		}
 		if err := t.dev.IpcSet(uapi); err != nil {
 			t.err = err.Error()
 			t.cfg = c
@@ -169,14 +199,33 @@ func (t *Tunnel) Apply(c config.Config) error {
 	return nil
 }
 
-func (t *Tunnel) startLocked(c config.Config) error {
-	addr, err := config.ServerAddress(c.Server.Network)
-	if err != nil {
-		return err
+// identity is what a new device is needed for: the key, the address and the port of the mode.
+func identity(c config.Config) string {
+	if c.IsClient() && c.Client != nil {
+		return "client|" + c.Client.PrivateKey + "|" + c.Client.Address
 	}
-	priv, err := wgkeys.Parse(c.Server.PrivateKey)
-	if err != nil {
-		return fmt.Errorf("private key: %w", err)
+	return fmt.Sprintf("server|%s|%d|%s", c.Server.PrivateKey, c.Server.ListenPort, c.Server.Network)
+}
+
+func (t *Tunnel) startLocked(c config.Config) error {
+	var addr netip.Addr
+	var priv wgkeys.Key
+	var err error
+	if c.IsClient() {
+		addr, err = netip.ParseAddr(c.Client.Address)
+		if err != nil {
+			return fmt.Errorf("client address: %w", err)
+		}
+		if priv, err = wgkeys.Parse(c.Client.PrivateKey); err != nil {
+			return fmt.Errorf("client private key: %w", err)
+		}
+	} else {
+		if addr, err = config.ServerAddress(c.Server.Network); err != nil {
+			return err
+		}
+		if priv, err = wgkeys.Parse(c.Server.PrivateKey); err != nil {
+			return fmt.Errorf("private key: %w", err)
+		}
 	}
 	tdev, tnet, err := netstack.CreateNetTUN([]netip.Addr{addr}, nil, t.o.MTU)
 	if err != nil {
@@ -187,7 +236,11 @@ func (t *Tunnel) startLocked(c config.Config) error {
 		Errorf:   func(format string, args ...any) { t.o.Log("wireguard: "+format, args...) },
 	}
 	dev := device.NewDevice(tdev, conn.NewDefaultBind(), logger)
-	if err := dev.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\n", priv.Hex(), c.Server.ListenPort)); err != nil {
+	uapi := fmt.Sprintf("private_key=%s\n", priv.Hex())
+	if !c.IsClient() {
+		uapi += fmt.Sprintf("listen_port=%d\n", c.Server.ListenPort)
+	}
+	if err := dev.IpcSet(uapi); err != nil {
 		dev.Close()
 		return fmt.Errorf("listen on UDP %d: %w", c.Server.ListenPort, cleanIpcErr(err))
 	}
@@ -203,7 +256,11 @@ func (t *Tunnel) startLocked(c config.Config) error {
 	t.dev, t.tnet, t.tdev, t.ln = dev, tnet, tdev, ln
 	t.since = time.Now()
 	go t.accept(ln)
-	t.o.Log("tunnel up: %s on UDP %d, the web server through %s", addr, c.Server.ListenPort, t.o.Socket)
+	if c.IsClient() {
+		t.o.Log("tunnel up as a client: %s, the server %s, the web server through %s", addr, c.Client.Endpoint, t.o.Socket)
+	} else {
+		t.o.Log("tunnel up: %s on UDP %d, the web server through %s", addr, c.Server.ListenPort, t.o.Socket)
+	}
 	return nil
 }
 
@@ -236,9 +293,45 @@ func (t *Tunnel) Close() {
 	t.closed = true
 }
 
-// peerLines is the UAPI block of every enabled device, by its public key (hex).
+// peerLines is the UAPI block of every enabled device, by its public key (hex) - or, in the client
+// mode, of the one server peer, with its endpoint resolved now.
 func peerLines(c config.Config) map[string]string {
 	out := map[string]string{}
+	if c.IsClient() {
+		if c.Client == nil {
+			return out
+		}
+		pub, err := wgkeys.Parse(c.Client.PeerPublicKey)
+		if err != nil {
+			return out
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "public_key=%s\n", pub.Hex())
+		if c.Client.PresharedKey != "" {
+			if psk, err := wgkeys.Parse(c.Client.PresharedKey); err == nil {
+				fmt.Fprintf(&b, "preshared_key=%s\n", psk.Hex())
+			}
+		}
+		if ep, err := resolveEndpoint(c.Client.Endpoint); err == nil {
+			fmt.Fprintf(&b, "endpoint=%s\n", ep)
+		} else {
+			// the name does not resolve right now: no endpoint, the peer waits; the caller sees the
+			// error in Apply's result through peersDelta's check below
+			fmt.Fprintf(&b, "endpoint_error=%s\n", err.Error())
+		}
+		b.WriteString("replace_allowed_ips=true\n")
+		for _, a := range c.Client.AllowedIPs {
+			if !strings.Contains(a, "/") {
+				a += "/32"
+			}
+			fmt.Fprintf(&b, "allowed_ip=%s\n", a)
+		}
+		if c.Client.Keepalive > 0 {
+			fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", c.Client.Keepalive)
+		}
+		out[pub.Hex()] = b.String()
+		return out
+	}
 	for _, d := range c.Devices {
 		if !d.Enabled {
 			continue
@@ -282,6 +375,18 @@ func peersDelta(have, want map[string]string) string {
 	return b.String()
 }
 
+// resolveEndpoint turns "name-or-address:port" into "ip:port" (wireguard-go takes no name).
+func resolveEndpoint(ep string) (string, error) {
+	ua, err := net.ResolveUDPAddr("udp", ep)
+	if err != nil {
+		return "", err
+	}
+	if ua.IP == nil {
+		return "", fmt.Errorf("%s has no address", ep)
+	}
+	return ua.String(), nil
+}
+
 // accept hands every tunnel connection to the web server's socket.
 func (t *Tunnel) accept(ln net.Listener) {
 	for {
@@ -297,6 +402,10 @@ func (t *Tunnel) forward(c net.Conn) {
 	defer c.Close()
 	src := proxyproto.AddrPortOf(c.RemoteAddr())
 	dst := proxyproto.AddrPortOf(c.LocalAddr())
+	claimed := src
+	if t.o.Map != nil && !t.declared(src.Addr()) {
+		claimed = netip.AddrPortFrom(t.o.Map.Map(src.Addr().Unmap()), src.Port())
+	}
 	d := net.Dialer{Timeout: t.o.DialTimeout}
 	up, err := d.DialContext(context.Background(), "unix", t.o.Socket)
 	if err != nil {
@@ -306,17 +415,29 @@ func (t *Tunnel) forward(c net.Conn) {
 	}
 	defer up.Close()
 	t.sockErr.Store("")
-	if _, err := up.Write(proxyproto.Header(src, dst)); err != nil {
+	if _, err := up.Write(proxyproto.Header(claimed, dst)); err != nil {
 		return
 	}
 	t.forwarded.Add(1)
 	t.count(src.Addr(), 1)
 	defer t.count(src.Addr(), -1)
+	_ = dst
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(up, c); closeWrite(up); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(c, up); closeWrite(c); done <- struct{}{} }()
 	<-done
 	<-done
+}
+
+// declared says whether the address lies in one of the manifest's ranges.
+func (t *Tunnel) declared(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, p := range t.o.Declared {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 func closeWrite(c net.Conn) {
@@ -349,12 +470,20 @@ func (t *Tunnel) openFor(a netip.Addr) int {
 func (t *Tunnel) Status() Status {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	st := Status{Peers: map[string]PeerStatus{}, ListenPort: t.cfg.Server.ListenPort, Error: t.err}
+	st := Status{Peers: map[string]PeerStatus{}, ListenPort: t.cfg.Server.ListenPort, Error: t.err, Mode: config.ModeServer}
 	if a, err := config.ServerAddress(t.cfg.Server.Network); err == nil {
 		st.Address = a.String()
 	}
 	if k, err := wgkeys.Parse(t.cfg.Server.PrivateKey); err == nil {
 		st.PublicKey = k.Public().String()
+	}
+	if t.cfg.IsClient() && t.cfg.Client != nil {
+		st.Mode = config.ModeClient
+		st.Address = t.cfg.Client.Address
+		st.ListenPort = 0
+		if k, err := wgkeys.Parse(t.cfg.Client.PrivateKey); err == nil {
+			st.PublicKey = k.Public().String()
+		}
 	}
 	st.SocketError, _ = t.sockErr.Load().(string)
 	st.Forwarded = t.forwarded.Load()
@@ -375,6 +504,31 @@ func (t *Tunnel) Status() Status {
 		}
 	}
 	peers := parsePeers(out)
+	if t.cfg.IsClient() && t.cfg.Client != nil {
+		if k, err := wgkeys.Parse(t.cfg.Client.PeerPublicKey); err == nil {
+			if p, ok := peers[k.Hex()]; ok {
+				p.Connections = 0
+				t.openMu.Lock()
+				for _, n := range t.open {
+					p.Connections += int(*n)
+				}
+				t.openMu.Unlock()
+				st.Connections = p.Connections
+				st.Client = &p
+				st.Peers[t.cfg.Client.PeerPublicKey] = p
+			}
+		}
+		if t.o.Map != nil {
+			for _, e := range t.o.Map.Entries() {
+				m := Mapping{Entry: e}
+				if a, err := netip.ParseAddr(e.Real); err == nil {
+					m.Connections = t.openFor(a)
+				}
+				st.Mapped = append(st.Mapped, m)
+			}
+		}
+		return st
+	}
 	for hexKey, p := range peers {
 		d, ok := byHex[hexKey]
 		if !ok {

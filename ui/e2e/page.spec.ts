@@ -115,3 +115,27 @@ test('the backup notice', async ({page}) => {
     await expect(page.getByTestId('banner-backup')).toBeVisible({timeout: 25_000});
     await page.request.get(`${FAKE}/dev/set?backup_unencrypted=0`);
 });
+
+test('the client mode: import a server configuration, then back', async ({page}) => {
+    await page.goto('./');
+    await page.getByRole('tab', {name: /Server/}).click();
+    await page.getByTestId('mode-client').check();
+    await expect(page.getByTestId('import-dialog')).toBeVisible();
+    await page.getByTestId('import-conf').fill('[Interface]\nPrivateKey = WAmgVYXkbT2bCtdcDwolI88/iTy4GNaH42zKFkaWBHg=\nAddress = 10.8.0.5/32\n\n[Peer]\nPublicKey = bmPCoiV1OzK4UGZprBgXfZtdTtq0dfqPIVRQ9zi3SD8=\nEndpoint = 127.0.0.1:51898\nAllowedIPs = 10.8.0.0/24\nPersistentKeepalive = 25\n');
+    await page.getByTestId('import-save').click();
+    await expect(page.getByTestId('client')).toBeVisible();
+    await expect(page.getByRole('tab', {name: /Devices/})).toHaveCount(0);
+    await expect(page.getByTestId('client')).toContainText('127.0.0.1:51898');
+    await expect(page.getByTestId('client')).toContainText('10.8.0.0/24');
+    await expect(page.getByTestId('client-state')).toHaveText('never yet', {timeout: 10_000});
+    // a file that does not parse is refused with the line
+    await page.getByTestId('client-import').click();
+    await page.getByTestId('import-conf').fill('[Interface]\nPrivateKey = x\n[Peer]\nPublicKey = y\n');
+    await page.getByTestId('import-save').click();
+    await expect(page.getByTestId('import-error')).toContainText('line 2');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('client-remove').click();
+    await page.getByTestId('confirm-remove-client-yes').click();
+    await expect(page.getByTestId('server-status')).toBeVisible();
+    await expect(page.getByRole('tab', {name: /Devices/})).toBeVisible();
+});

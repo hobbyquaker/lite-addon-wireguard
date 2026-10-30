@@ -135,3 +135,104 @@ func QRPNG(conf string, size int) ([]byte, error) {
 	}
 	return png, nil
 }
+
+// ImportedConfig is what a server's configuration file for this system says (the client mode): the
+// system's own private key and tunnel address, and the one peer - the server - with its key, an
+// optional preshared key, its endpoint, the addresses it routes to this system (AllowedIPs) and
+// the keepalive.
+type ImportedConfig struct {
+	PrivateKey   Key
+	Address      string
+	PeerKey      Key
+	PresharedKey Key
+	Endpoint     string
+	AllowedIPs   []string
+	Keepalive    int
+	// DNS is ignored on purpose (the system resolves nothing through the tunnel); kept for the page.
+	DNS string
+}
+
+// ParseImported reads a WireGuard configuration file as wg-quick and the apps write it: one
+// [Interface] with PrivateKey and Address, one [Peer] with PublicKey, Endpoint and AllowedIPs
+// (PresharedKey and PersistentKeepalive optional). Anything else - a second peer, Table, PostUp,
+// MTU - is refused or ignored as noted.
+func ParseImported(text string) (ImportedConfig, error) {
+	var c ImportedConfig
+	section := ""
+	peers := 0
+	for n, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if i := strings.IndexAny(line, "#;"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+			if section == "peer" {
+				peers++
+				if peers > 1 {
+					return c, fmt.Errorf("line %d: a second [Peer] - this system connects to one server", n+1)
+				}
+			} else if section != "interface" {
+				return c, fmt.Errorf("line %d: unknown section [%s]", n+1, section)
+			}
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			return c, fmt.Errorf("line %d: not a key = value line", n+1)
+		}
+		k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
+		var err error
+		switch section + "." + k {
+		case "interface.privatekey":
+			c.PrivateKey, err = Parse(v)
+		case "interface.address":
+			// the first IPv4 address; a second one (IPv6) is ignored
+			for _, a := range strings.Split(v, ",") {
+				a = strings.TrimSpace(a)
+				if a != "" && !strings.Contains(a, ":") && c.Address == "" {
+					c.Address = a
+				}
+			}
+		case "interface.dns":
+			c.DNS = v
+		case "interface.listenport", "interface.mtu", "interface.table", "interface.preup", "interface.postup", "interface.predown", "interface.postdown", "interface.saveconfig", "interface.fwmark":
+			// of no use here: the system listens on no port in the client mode and runs no scripts
+		case "peer.publickey":
+			c.PeerKey, err = Parse(v)
+		case "peer.presharedkey":
+			c.PresharedKey, err = Parse(v)
+		case "peer.endpoint":
+			c.Endpoint = v
+		case "peer.allowedips":
+			for _, a := range strings.Split(v, ",") {
+				if a = strings.TrimSpace(a); a != "" {
+					c.AllowedIPs = append(c.AllowedIPs, a)
+				}
+			}
+		case "peer.persistentkeepalive":
+			_, err = fmt.Sscanf(v, "%d", &c.Keepalive)
+		default:
+			return c, fmt.Errorf("line %d: unknown key %s in [%s]", n+1, k, section)
+		}
+		if err != nil {
+			return c, fmt.Errorf("line %d: %s: %v", n+1, k, err)
+		}
+	}
+	switch {
+	case c.PrivateKey.IsZero():
+		return c, errors.New("[Interface] PrivateKey is missing")
+	case c.Address == "":
+		return c, errors.New("[Interface] Address (IPv4) is missing")
+	case peers == 0 || c.PeerKey.IsZero():
+		return c, errors.New("[Peer] PublicKey is missing")
+	case c.Endpoint == "":
+		return c, errors.New("[Peer] Endpoint is missing: the server's name or address and port")
+	case len(c.AllowedIPs) == 0:
+		return c, errors.New("[Peer] AllowedIPs is missing: the server's tunnel network, whose devices may reach this system")
+	}
+	return c, nil
+}

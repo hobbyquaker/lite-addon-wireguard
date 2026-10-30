@@ -58,20 +58,61 @@ type Device struct {
 	Created int64 `json:"created"`
 }
 
+// Client is the system's end of a tunnel to a WireGuard server elsewhere (the client mode, 0.2.0):
+// a VPS, a router, OPNsense. The server's configuration file for this system is imported on the
+// page; the devices connect to that server, and the server routes them to this system.
+type Client struct {
+	// PrivateKey is this system's key in that tunnel, from the imported file (base64). Never
+	// answered by the API.
+	PrivateKey string `json:"private_key"`
+	// Address is this system's tunnel address the server gave it, "10.8.0.5".
+	Address string `json:"address"`
+	// PeerPublicKey is the server's key.
+	PeerPublicKey string `json:"peer_public_key"`
+	// PresharedKey is optional, base64. Never answered by the API.
+	PresharedKey string `json:"preshared_key,omitempty"`
+	// Endpoint is the server, "name-or-address:port".
+	Endpoint string `json:"endpoint"`
+	// AllowedIPs are the server's networks: the source addresses whose connections this system
+	// accepts through the tunnel (the devices behind the server).
+	AllowedIPs []string `json:"allowed_ips"`
+	// Keepalive is the persistent keepalive towards the server, seconds; 0 is none.
+	Keepalive int `json:"keepalive"`
+	// Imported is unix milliseconds of the import.
+	Imported int64 `json:"imported"`
+}
+
+// Modes of the tunnel.
+const (
+	ModeServer = "server"
+	ModeClient = "client"
+)
+
 // Config is the whole file.
 type Config struct {
+	// Mode is ModeServer (this system listens, the devices connect to it) or ModeClient (this
+	// system connects to a server, the devices come through it). Empty reads as server.
+	Mode    string   `json:"mode,omitempty"`
 	Server  Server   `json:"server"`
+	Client  *Client  `json:"client,omitempty"`
 	Devices []Device `json:"devices"`
 }
+
+// IsClient says whether the tunnel runs in the client mode.
+func (c Config) IsClient() bool { return c.Mode == ModeClient }
 
 // Defaults.
 const (
 	DefaultPort      = 51820
 	DefaultNetwork   = "10.77.0.0/24"
 	DefaultKeepalive = 25
-	KeySourceSystem  = "system"
-	KeySourceImport  = "imported"
-	MaxDevices       = 200
+	// MappedBlock is the second range the manifest declares for the ingress: the addresses of
+	// devices outside the own network (the client mode) are mapped into it, one to one and stably
+	// (internal/addrmap).
+	MappedBlock     = "10.77.1.0/24"
+	KeySourceSystem = "system"
+	KeySourceImport = "imported"
+	MaxDevices      = 200
 )
 
 // DefaultServer is a new server, without its key.
@@ -251,6 +292,76 @@ func (s *Store) SetServer(in ServerSettings) error {
 			next.Devices[i].Address = a.String()
 		}
 	}
+	return s.commit(next)
+}
+
+// SetMode switches between the server and the client mode. The client mode needs an imported
+// configuration.
+func (s *Store) SetMode(mode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch mode {
+	case ModeServer, "":
+		mode = ModeServer
+	case ModeClient:
+		if s.c.Client == nil {
+			return invalid("the client mode needs an imported server configuration first")
+		}
+	default:
+		return invalid("mode is server or client")
+	}
+	next := clone(s.c)
+	next.Mode = mode
+	if mode == ModeServer {
+		next.Mode = ""
+	}
+	return s.commit(next)
+}
+
+// ImportClient takes a server's configuration file for this system (the client mode) and
+// switches to the client mode.
+func (s *Store) ImportClient(text string) error {
+	ic, err := wgkeys.ParseImported(text)
+	if err != nil {
+		return invalid("the configuration: %v", err)
+	}
+	addr, _, ok := strings.Cut(ic.Address, "/")
+	a, aerr := netip.ParseAddr(addr)
+	if aerr != nil || !a.Is4() {
+		return invalid("the configuration: Address %q is not an IPv4 address", ic.Address)
+	}
+	_ = ok
+	if !endpointRe.MatchString(ic.Endpoint) || !strings.Contains(ic.Endpoint, ":") {
+		return invalid("the configuration: Endpoint %q is not name-or-address:port", ic.Endpoint)
+	}
+	for _, r := range ic.AllowedIPs {
+		if _, err := netip.ParsePrefix(r); err != nil {
+			if _, err2 := netip.ParseAddr(r); err2 != nil {
+				return invalid("the configuration: AllowedIPs %q is not a network", r)
+			}
+		}
+	}
+	if ic.Keepalive < 0 || ic.Keepalive > 3600 {
+		return invalid("the configuration: PersistentKeepalive is 0 to 3600")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := clone(s.c)
+	next.Client = &Client{PrivateKey: ic.PrivateKey.String(), Address: a.String(), PeerPublicKey: ic.PeerKey.String(), Endpoint: ic.Endpoint, AllowedIPs: append([]string{}, ic.AllowedIPs...), Keepalive: ic.Keepalive, Imported: s.Now().UnixMilli()}
+	if !ic.PresharedKey.IsZero() {
+		next.Client.PresharedKey = ic.PresharedKey.String()
+	}
+	next.Mode = ModeClient
+	return s.commit(next)
+}
+
+// RemoveClient forgets the imported configuration and returns to the server mode.
+func (s *Store) RemoveClient() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := clone(s.c)
+	next.Client = nil
+	next.Mode = ""
 	return s.commit(next)
 }
 
@@ -538,6 +649,31 @@ func EndpointFor(s Server) string {
 }
 
 func validate(c Config) error {
+	if c.Mode != "" && c.Mode != ModeServer && c.Mode != ModeClient {
+		return invalid("mode %q", c.Mode)
+	}
+	if c.Mode == ModeClient && c.Client == nil {
+		return invalid("the client mode without an imported configuration")
+	}
+	if cl := c.Client; cl != nil {
+		if _, err := wgkeys.Parse(cl.PrivateKey); err != nil {
+			return invalid("client: private key")
+		}
+		if _, err := wgkeys.Parse(cl.PeerPublicKey); err != nil {
+			return invalid("client: the server's public key")
+		}
+		if cl.PresharedKey != "" {
+			if _, err := wgkeys.Parse(cl.PresharedKey); err != nil {
+				return invalid("client: preshared key")
+			}
+		}
+		if a, err := netip.ParseAddr(cl.Address); err != nil || !a.Is4() {
+			return invalid("client: address %q", cl.Address)
+		}
+		if cl.Endpoint == "" || len(cl.AllowedIPs) == 0 {
+			return invalid("client: endpoint and allowed IPs")
+		}
+	}
 	s := c.Server
 	if s.ListenPort < 1024 || s.ListenPort > 65535 {
 		return invalid("the listen port is 1024 to 65535")

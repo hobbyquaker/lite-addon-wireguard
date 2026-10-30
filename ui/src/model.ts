@@ -30,8 +30,21 @@ export interface Device {
     created: number;
 }
 
+export interface ClientView {
+    public_key: string;
+    address: string;
+    peer_public_key: string;
+    has_psk: boolean;
+    endpoint: string;
+    allowed_ips: string[];
+    keepalive: number;
+    imported: number;
+}
+
 export interface Config {
+    mode: 'server' | 'client';
     server: ServerView;
+    client?: ClientView;
     devices: Device[];
     defaults: {listen_port: number; network: string; keepalive: number};
     version: string;
@@ -51,9 +64,19 @@ export interface DeviceStatus extends PeerStatus {
     connected: boolean;
 }
 
+export interface Mapping {
+    real: string;
+    mapped: string;
+    last_seen: number;
+    connections: number;
+}
+
 export interface Status {
     running: boolean;
     error?: string;
+    mode: 'server' | 'client';
+    client?: PeerStatus;
+    mapped?: Mapping[];
     listen_port: number;
     address: string;
     public_key: string;

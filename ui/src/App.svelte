@@ -65,11 +65,19 @@
         void loadFacts(true);
     }
 
-    const tabs = $derived([
-        {id: 'devices', label: t('Devices'), ...(config && config.devices.length === 0 ? {badge: '!'} : {})},
-        {id: 'server', label: t('Server'), ...(config && config.server.enabled && config.server.endpoint === '' ? {badge: '!'} : {})},
-    ]);
-    const portClosed = $derived(!!config?.server.enabled && facts?.port_open === false);
+    const client = $derived(config?.mode === 'client');
+    const tabs = $derived(
+        client
+            ? [{id: 'server', label: t('Connection')}]
+            : [
+                  {id: 'devices', label: t('Devices'), ...(config && config.devices.length === 0 ? {badge: '!'} : {})},
+                  {id: 'server', label: t('Server'), ...(config && config.server.enabled && config.server.endpoint === '' ? {badge: '!'} : {})},
+              ],
+    );
+    $effect(() => {
+        if (client && tab === 'devices') tab = 'server';
+    });
+    const portClosed = $derived(!!config?.server.enabled && !client && facts?.port_open === false);
 </script>
 
 <div class="wg-app" lang={i18n.language}>
@@ -107,13 +115,13 @@
         {#if facts?.checked && !facts.token_ok}
             <div class="wg-banner wg-banner-warn" role="status" data-testid="banner-token">{t("The addon's token is not accepted by the system: {error}. The page cannot show the firewall and backup state.", {error: facts.error ?? ''})}</div>
         {/if}
-        {#if config && config.server.enabled && config.server.endpoint === ''}
+        {#if config && config.server.enabled && !client && config.server.endpoint === ''}
             <div class="wg-banner wg-banner-info" role="status" data-testid="banner-endpoint">{t('No public endpoint is set yet. The devices need the name or address under which this system is reachable from the internet: set it under Server.')}</div>
         {/if}
     </div>
     <main class="wg-page">
         {#if config}
-            {#if tab === 'devices'}
+            {#if tab === 'devices' && !client}
                 <DevicesTab {config} {status} {notices} {now} onchanged={changed} />
             {:else}
                 <ServerTab {config} {status} {facts} {notices} onchanged={changed} />

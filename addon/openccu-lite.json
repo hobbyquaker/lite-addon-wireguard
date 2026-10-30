@@ -6,7 +6,7 @@
     "de": "WireGuard-Fernzugriff auf dieses System: Telefon oder Laptop erreichen die Oberfläche, die APIs und die Addon-Seiten von unterwegs. WireGuard läuft im Userspace, ohne Kernel-Schnittstelle und ohne Zusatzrecht; der Tunnel endet im Addon, das nur den Webserver erreichbar macht. Geräte werden auf der Seite angelegt (Schlüssel auf dem System, QR-Code für die WireGuard-App, oder ein eigener öffentlicher Schlüssel). Ein UDP-Port, standardmäßig geschlossen; keine ausgehenden Verbindungen.",
     "en": "WireGuard remote access to this system: a phone or laptop reaches the user interface, the APIs and the addon pages from anywhere. WireGuard runs in userspace, with no kernel interface and no privilege; the tunnel ends inside the addon, which makes only the web server reachable. Devices are created on the page (a key made on the system with a QR code for the WireGuard app, or your own public key). One UDP port, closed by default; no outgoing connections."
   },
-  "version": "0.1.0",
+  "version": "0.2.0",
   "homepage": "https://github.com/hobbyquaker/lite-addon-wireguard",
   "licence": "MIT",
   "changelog": "https://github.com/hobbyquaker/lite-addon-wireguard/blob/main/CHANGELOG.md",
@@ -34,10 +34,10 @@
       "51820": {"proto": "udp", "label": {"de": "WireGuard", "en": "WireGuard"}}
     },
     "api_scopes": ["system:read"],
-    "web_ingress": {"ranges": ["10.77.0.0/24"]},
+    "web_ingress": {"ranges": ["10.77.0.0/24", "10.77.1.0/24"]},
     "note": {
-      "de": "Lauscht auf UDP 51820 (der Schalter hier öffnet den Port in der Firewall; der Router muss ihn weiterleiten) und nimmt Verbindungen der Geräte an, die Sie auf der Seite anlegen; verbindet sich selbst nirgendwohin. Reicht die Web-Anfragen der Geräte über den Web-Eingang des Systems an den Webserver weiter, so dass das System die Tunnel-Adresse des Geräts sieht (nur Adressen aus 10.77.0.0/24). Das Recht system:read zeigt auf der Seite, ob der Port offen ist und ob die Backups verschlüsselt sind.",
-      "en": "Listens on UDP 51820 (the switch here opens the port on the firewall; the router must forward it) and accepts connections of the devices you create on the page; connects nowhere itself. Hands the devices' web requests to the web server through the system's web ingress, so the system sees the device's tunnel address (addresses in 10.77.0.0/24 only). The scope system:read shows on the page whether the port is open and whether the backups are encrypted."
+      "de": "Lauscht auf UDP 51820 (der Schalter hier öffnet den Port in der Firewall; der Router muss ihn weiterleiten) und nimmt Verbindungen der Geräte an, die Sie auf der Seite anlegen; verbindet sich selbst nirgendwohin. Im Client-Modus baut es genau eine ausgehende Verbindung auf: zu dem WireGuard-Server, dessen Konfiguration Sie importiert haben. Reicht die Web-Anfragen der Geräte über den Web-Eingang des Systems an den Webserver weiter, so dass das System die Tunnel-Adresse des Geräts sieht: aus 10.77.0.0/24 im Server-Modus; im Client-Modus wird die Adresse jedes Geräts fest auf eine aus 10.77.1.0/24 abgebildet, die Seite zeigt beide. Das Recht system:read zeigt auf der Seite, ob der Port offen ist und ob die Backups verschlüsselt sind.",
+      "en": "Listens on UDP 51820 (the switch here opens the port on the firewall; the router must forward it) and accepts connections of the devices you create on the page; connects nowhere itself. In the client mode it makes exactly one outgoing connection: to the WireGuard server whose configuration you imported. Hands the devices' web requests to the web server through the system's web ingress, so the system sees the device's tunnel address: from 10.77.0.0/24 in the server mode; in the client mode each device's address is mapped stably onto one from 10.77.1.0/24, and the page shows both. The scope system:read shows on the page whether the port is open and whether the backups are encrypted."
     }
   }
 }

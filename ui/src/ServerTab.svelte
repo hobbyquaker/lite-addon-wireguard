@@ -6,15 +6,21 @@
     import type {NoticesStore} from 'occulite-ui/notices';
 
     import ConfirmDialog from './ConfirmDialog.svelte';
-    import {post, put} from './api.js';
-    import {endpointSuggestions, settingsOf, type Config, type Facts, type ServerSettings, type Status} from './model.js';
+    import ImportDialog from './ImportDialog.svelte';
+    import {del, post, put} from './api.js';
+    import {endpointSuggestions, formatAge, formatBytes, settingsOf, type Config, type Facts, type ServerSettings, type Status} from './model.js';
 
     let {config, status, facts, notices, onchanged}: {config: Config; status: Status | undefined; facts: Facts | undefined; notices: NoticesStore; onchanged: (c: Config) => void} = $props();
 
     let form = $state<ServerSettings>(untrack(() => settingsOf(config.server)));
     let busy = $state(false);
     let confirmKey = $state(false);
+    let confirmRemoveClient = $state(false);
+    let importOpen = $state(false);
     let host = $state<HTMLElement | undefined>();
+    const client = $derived(config.mode === 'client');
+    const now = $derived(status?.now ?? Date.now());
+    const clientState = $derived(!config.server.enabled ? 'off' : status?.error ? 'error' : !status?.client?.last_handshake ? 'never' : now - status.client.last_handshake < 3 * 60_000 ? 'connected' : 'idle');
 
     $effect(() => {
         form = settingsOf(config.server);
@@ -49,13 +55,115 @@
         }
     }
 
-    async function copyKey() {
-        const r = await copyText(config.server.public_key, {host});
+    async function copyKey(key: string) {
+        const r = await copyText(key, {host});
         notices.push(r === 'failed' ? 'warn' : 'info', r === 'failed' ? t('The clipboard is not available here; select the text and copy it.') : t('Copied.'));
+    }
+
+    async function setMode(mode: 'server' | 'client') {
+        if (mode === config.mode) return;
+        if (mode === 'client' && !config.client) {
+            importOpen = true;
+            return;
+        }
+        busy = true;
+        try {
+            onchanged(await put<Config>('api/v1/mode', {mode}));
+            notices.push('info', t('Saved.'));
+        } catch (e) {
+            notices.push('error', (e as Error).message);
+        } finally {
+            busy = false;
+        }
+    }
+
+    async function removeClient() {
+        confirmRemoveClient = false;
+        busy = true;
+        try {
+            onchanged(await del<Config>('api/v1/client'));
+            notices.push('info', t('Removed.'));
+        } catch (e) {
+            notices.push('error', (e as Error).message);
+        } finally {
+            busy = false;
+        }
     }
 </script>
 
-<section class="wg-section" data-testid="server-status" bind:this={host}>
+<section class="wg-section" data-testid="mode" bind:this={host}>
+    <h2>{t('Mode')}</h2>
+    <div class="wg-radios">
+        <label class="wg-check"><input type="radio" name="mode" value="server" checked={!client} onchange={() => setMode('server')} disabled={busy} data-testid="mode-server" /> {t('Server: this system listens, your devices connect to it (a port forward on the router)')}</label>
+        <label class="wg-check"><input type="radio" name="mode" value="client" checked={client} onchange={() => setMode('client')} disabled={busy} data-testid="mode-client" /> {t('Client: this system connects to a WireGuard server elsewhere (a VPS, a router), your devices come through that server - no open port here')}</label>
+    </div>
+</section>
+
+{#if client && config.client}
+<section class="wg-section" data-testid="client">
+    <h2>{t('Connection')}</h2>
+    <div class="wg-kv">
+        <span>{t('Tunnel')}</span>
+        <span class="wg-row">
+            <span class="wg-pill" class:ok={clientState === 'connected'} class:warn={clientState === 'idle'} class:bad={clientState === 'error'} class:off={clientState === 'off'} data-testid="client-state">{t('client.' + clientState)}</span>
+            {#if status?.client}<span class="wg-muted wg-small">{t('Last handshake')}: {formatAge(status.client.last_handshake, now, t)} · ↓{formatBytes(status.client.rx_bytes)} ↑{formatBytes(status.client.tx_bytes)}</span>{/if}
+        </span>
+        <span>{t('Server')}</span>
+        <span class="wg-mono">{config.client.endpoint}</span>
+        <span>{t("This system's tunnel address")}</span>
+        <span class="wg-mono">{config.client.address}</span>
+        <span>{t('Devices that may reach this system')}</span>
+        <span class="wg-mono">{config.client.allowed_ips.join(', ')}</span>
+        <span>{t("This system's public key")}</span>
+        <span class="wg-row"><span class="wg-mono wg-break" data-testid="client-public-key">{config.client.public_key}</span><button class="hmm-button" onclick={() => copyKey(config.client!.public_key)}>{t('Copy')}</button></span>
+        <span>{t('Preshared key')}</span>
+        <span>{config.client.has_psk ? t('yes') : t('no')} · {t('Keepalive (s)')}: {config.client.keepalive || t('off')}</span>
+    </div>
+    <div class="wg-actions">
+        <button class="hmm-button" onclick={() => (importOpen = true)} disabled={busy} data-testid="client-import">{t('Import another configuration…')}</button>
+        <span class="wg-spacer"></span>
+        <button class="hmm-button wg-danger" onclick={() => (confirmRemoveClient = true)} disabled={busy} data-testid="client-remove">{t('Remove the configuration…')}</button>
+    </div>
+    <p class="wg-help">{t("The server must know this system as a peer with the public key above and route the devices' traffic for this system's tunnel address to it; the configuration file it made for this system says so. Through the tunnel the devices reach http://{address}/ - this system alone.", {address: config.client.address})}</p>
+    <div class="wg-form">
+        <label class="wg-check"><input type="checkbox" bind:checked={form.enabled} data-testid="server-enabled" /> {t('Tunnel on')}</label>
+    </div>
+    <div class="wg-actions">
+        <button class="hmm-button wg-primary" disabled={!dirty || busy} onclick={save} data-testid="server-save">{t('Save')}</button>
+    </div>
+</section>
+
+<section class="wg-section wg-section-wide" data-testid="mapped">
+    <h2>{t('Devices seen')}</h2>
+    <p class="wg-help">{t('The devices come with addresses of the server\'s network. This system sees each of them under a fixed address from {block} instead - the login lockout, the address ranges of API tokens and the journal use that one; here both are shown. The mapping is kept across restarts; when the block is full, the device not seen for the longest time gives its address up.', {block: '10.77.1.0/24'})}</p>
+    {#if !status?.mapped?.length}
+        <p class="wg-muted" data-testid="no-mapped">{t('No device has connected yet.')}</p>
+    {:else}
+        <table class="wg-grid">
+            <thead><tr><th>{t('Address in the tunnel')}</th><th>{t('Seen by this system as')}</th><th>{t('Last seen')}</th><th>{t('Connections')}</th></tr></thead>
+            <tbody>
+                {#each status.mapped as m (m.real)}
+                    <tr><td class="wg-mono">{m.real}</td><td class="wg-mono">{m.mapped}</td><td class="wg-nowrap wg-age">{formatAge(m.last_seen, now, t)}</td><td>{m.connections}</td></tr>
+                {/each}
+            </tbody>
+        </table>
+    {/if}
+</section>
+
+<section class="wg-section" data-testid="howto-client">
+    <details class="wg-details">
+        <summary>{t('A WireGuard server for this system (a VPS)')}</summary>
+        <ol class="wg-howto">
+            <li>{t('howto.client.1')}</li>
+            <li>{t('howto.client.2')}</li>
+            <li>{t('howto.client.3')}</li>
+            <li>{t('howto.client.4')}</li>
+        </ol>
+        <p class="wg-help">{t('howto.client.5')}</p>
+    </details>
+</section>
+{:else}
+<section class="wg-section" data-testid="server-status">
     <h2>{t('Status')}</h2>
     <div class="wg-kv">
         <span>{t('Tunnel')}</span>
@@ -70,7 +178,7 @@
         <span>{t('Tunnel network')}</span>
         <span class="wg-mono">{config.server.network} <span class="wg-muted">· {t('this system {address}', {address: config.server.address})}</span></span>
         <span>{t("This system's public key")}</span>
-        <span class="wg-row"><span class="wg-mono wg-break" data-testid="public-key">{config.server.public_key}</span><button class="hmm-button" onclick={copyKey}>{t('Copy')}</button></span>
+        <span class="wg-row"><span class="wg-mono wg-break" data-testid="public-key">{config.server.public_key}</span><button class="hmm-button" onclick={() => copyKey(config.server.public_key)}>{t('Copy')}</button></span>
         <span>{t('Connections')}</span>
         <span>{t('{n} open, {total} since the start', {n: status?.connections ?? 0, total: status?.forwarded ?? 0})}</span>
     </div>
@@ -117,7 +225,19 @@
         <p class="wg-help">{t('howto.5')}</p>
     </details>
 </section>
+{/if}
 
+<ImportDialog open={importOpen} onclose={() => (importOpen = false)} onsaved={(c) => ((importOpen = false), onchanged(c), notices.push('info', t('The configuration was imported; this system connects to the server now.')))} />
+<ConfirmDialog
+    open={confirmRemoveClient}
+    title={t('Remove the server configuration?')}
+    message={t('This system stops connecting to the server and returns to the server mode. The server keeps this system as a peer until you remove it there.')}
+    confirmLabel={t('Remove')}
+    danger
+    testId="confirm-remove-client"
+    onconfirm={removeClient}
+    onclose={() => (confirmRemoveClient = false)}
+/>
 <ConfirmDialog
     open={confirmKey}
     title={t('Make a new key for this system?')}

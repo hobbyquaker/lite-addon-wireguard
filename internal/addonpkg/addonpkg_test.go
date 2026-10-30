@@ -32,14 +32,15 @@ func TestManifest(t *testing.T) {
 		t.Errorf("scopes %v", m.Runtime.APIScopes)
 	}
 	// the web ingress: the tunnel network, nothing else
-	if m.Runtime.WebIngress == nil || len(m.Runtime.WebIngress.Ranges) != 1 || m.Runtime.WebIngress.Ranges[0] != "10.77.0.0/24" {
+	// the own network and the block the client mode's devices are mapped into - nothing wider
+	if m.Runtime.WebIngress == nil || len(m.Runtime.WebIngress.Ranges) != 2 || m.Runtime.WebIngress.Ranges[0] != "10.77.0.0/24" || m.Runtime.WebIngress.Ranges[1] != "10.77.1.0/24" {
 		t.Errorf("web_ingress %+v", m.Runtime.WebIngress)
 	}
 	if m.Description["de"] == "" || m.Description["en"] == "" || m.Runtime.Note["de"] == "" || m.Runtime.Note["en"] == "" {
 		t.Error("the description and the note in both languages")
 	}
-	if !strings.Contains(m.Runtime.Note["en"], "51820") || !strings.Contains(m.Runtime.Note["en"], "10.77.0.0/24") {
-		t.Error("the note names the port and the range")
+	if !strings.Contains(m.Runtime.Note["en"], "51820") || !strings.Contains(m.Runtime.Note["en"], "10.77.1.0/24") {
+		t.Error("the note names the port and the ranges")
 	}
 	if m.Requires.Lite != "1.1.0" {
 		t.Errorf("requires.lite %q: the ingress needs 1.1.0-dev.6 or newer", m.Requires.Lite)
