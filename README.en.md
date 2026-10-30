@@ -2,6 +2,9 @@
 
 *[Deutsch](README.md)*
 
+> **Requires openccu-lite 1.1.0-dev.6 or later** (the system's web ingress). On openccu-lite 1.0.0 the addon cannot be
+> installed; the manifest names the minimum (`requires.lite`).
+
 **WireGuard remote access** to an [openccu-lite](https://github.com/hobbyquaker/openccu-lite) system: a phone or
 laptop reaches the user interface, the APIs and the addon pages from anywhere - and nothing else. WireGuard runs in
 userspace inside the addon (wireguard-go with its own network stack): no kernel interface, no privilege, no root. The

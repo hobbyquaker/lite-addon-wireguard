@@ -15,7 +15,7 @@
     "asset": "wireguard-{arch}-{version}.tar.gz"
   },
   "requires": {
-    "lite": "1.1.0",
+    "lite": "1.1.0-dev.6",
     "architectures": ["aarch64", "x86_64", "armv7l"]
   },
   "ui": {

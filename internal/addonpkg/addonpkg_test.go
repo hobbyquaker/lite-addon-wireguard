@@ -42,7 +42,9 @@ func TestManifest(t *testing.T) {
 	if !strings.Contains(m.Runtime.Note["en"], "51820") || !strings.Contains(m.Runtime.Note["en"], "10.77.1.0/24") {
 		t.Error("the note names the port and the ranges")
 	}
-	if m.Requires.Lite != "1.1.0" {
+	// the first build with the web ingress; the system compares by strict semver, so a release
+	// number would refuse the dev builds that carry it
+	if m.Requires.Lite != "1.1.0-dev.6" {
 		t.Errorf("requires.lite %q: the ingress needs 1.1.0-dev.6 or newer", m.Requires.Lite)
 	}
 }

@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-10-30
 
 - **Client mode:** this system connects out to a WireGuard server elsewhere - a VPS, a router with a WireGuard server,
   OPNsense - and the devices come through that server; no open port and no port forward here, so it works behind

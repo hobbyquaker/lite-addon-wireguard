@@ -2,6 +2,9 @@
 
 *[English](README.en.md)*
 
+> **Benötigt openccu-lite 1.1.0-dev.6 oder neuer** (den Web-Eingang des Systems). Mit openccu-lite 1.0.0 lässt sich das
+> Addon nicht installieren; das Manifest nennt die Mindestversion (`requires.lite`).
+
 **WireGuard-Fernzugriff** auf ein [openccu-lite](https://github.com/hobbyquaker/openccu-lite)-System: Telefon oder
 Laptop erreichen von unterwegs die Oberfläche, die APIs und die Addon-Seiten – und sonst nichts. WireGuard läuft im
 Userspace im Addon selbst (wireguard-go mit einem eigenen Netzwerkstack): keine Kernel-Schnittstelle, kein Zusatzrecht,
