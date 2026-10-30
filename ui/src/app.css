@@ -764,8 +764,11 @@ button.wg-fixed {
 .wg-conf {
     width: 100%;
     box-sizing: border-box;
+    min-height: 16em;
+    height: auto;
     font-family: var(--hmm-font-mono, monospace);
     font-size: var(--hmm-font-size-small, 0.9em);
+    line-height: 1.4;
     white-space: pre;
     resize: vertical;
 }
